@@ -84,7 +84,7 @@ export class FrameConn extends events.EventEmitter {
     this.conn = conn
 
     this.initReadState(Buffer.alloc(0))
-    this.conn.on('data', (buf) => this.onData(buf))
+    this.conn.on('data', (buf) => this.eatBuf(buf))
   }
 
   sendFrame(frame:Frame):Boolean {
@@ -100,7 +100,7 @@ export class FrameConn extends events.EventEmitter {
     this.dataSize = 0
   }
 
-  onData(buf:Buffer) {
+  private eatBuf(buf:Buffer) {
     this.savedBuf = Buffer.concat([this.savedBuf, buf])
 
     while (this.savedBuf.length >= this.wantSize) {
