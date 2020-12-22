@@ -1,16 +1,21 @@
-import * as fc from './frame_conn'
+import {Frame, FrameConn} from './frame_conn'
 import * as events from 'events'
 
+export interface StreamLike {
+  on(event:'data'|'close'|'error', cb:(...args:any) => void):this
+  write(buf:Buffer):boolean
+  destroy(error?:Error):void
+}
 
 export class Stream extends events.EventEmitter {
-  private fconn:fc.FrameConn
+  private fconn:FrameConn
   private writeSID:number
   private readSID:number
 
-  constructor(fconn:fc.FrameConn) {
+  constructor(fconn:FrameConn) {
     super()
     this.fconn = fconn
-    this.readSID = fc.Frame.uid()
+    this.readSID = Frame.uid()
   }
 
   bindWriteSID(sid:number) {
@@ -21,14 +26,24 @@ export class Stream extends events.EventEmitter {
     return this.readSID
   }
 
-  write(buf:Buffer):Boolean {
-    return this.fconn.send(fc.Frame.newStreamData(this.writeSID, buf))
+  write(buf:Buffer):boolean {
+    return this.fconn.send(Frame.newStreamData(this.writeSID, buf))
+  }
+
+  destroy(error?:Error) {
+    super.removeAllListeners()
+    this.fconn.removeAllListeners(`data/${this.readSID}`)
+    this.fconn = null
+    this.readSID = 0
+    this.emit('close')
   }
 
   on(event:'data'|'close'|'error', cb:(...args:any) => void):this {
     switch (event) {
       case 'data':
-        this.fconn.on(`data/${this.readSID}`, cb)
+        this.fconn.on(`data/${this.readSID}`, (frame:Frame) => {
+          cb(frame.data)
+        })
         break
       case 'close':
         super.on('close', cb)

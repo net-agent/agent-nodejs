@@ -51,22 +51,27 @@ export class Frame {
     )
   }
   static newDialRequest(localSID:number, vport:number):Frame {
+    let buf = Buffer.alloc(8)
+    buf.writeUInt32BE(vport, 0)
+    buf.writeUInt32BE(localSID, 4)
     return new Frame(
       Frame.uid(),
       Frame.uid(),
       Frame.typeDialRequest,
       null,
       Frame.binaryData,
-      null)
+      buf)
   }
   static newDialResponse(sid:number, localSID: number):Frame {
+    let buf = Buffer.alloc(4)
+    buf.writeUInt32BE(localSID, 0)
     return new Frame(
       Frame.uid(),
       sid,
       Frame.typeDialResponse,
       null,
       Frame.binaryData,
-      null)
+      buf)
   }
   static newRequest(cmd:string, dataType:number, data:Buffer):Frame {
     return new Frame(
@@ -183,14 +188,14 @@ export class Frame {
   }
 
   getText():string {
-    if (this.type != Frame.textData) {
+    if (this.dataType != Frame.textData) {
       throw 'dataType is not textData'
     }
     return this.data ? this.data.toString('utf-8') : ''
   }
 
   getJSON():any {
-    if (this.type != Frame.jsonData) {
+    if (this.dataType != Frame.jsonData) {
       throw 'dataType is not jsonData'
     }
     if (!this.data || this.data.length <= 0) return null
@@ -238,7 +243,8 @@ export class FrameConn extends events.EventEmitter {
     return FrameConn.uidvalue++
   }
 
-  send(frame:Frame):Boolean {
+  send(frame:Frame):boolean {
+    // console.log('send frame', frame)
     return this.conn.write(frame.getBuffer())
   }
 
@@ -286,7 +292,7 @@ export class FrameConn extends events.EventEmitter {
         frame.getRespEventName(),
         FrameConn.dialTimeout,
         (frame:Frame) => {
-          if (!frame.isType(Frame.binaryData)) {
+          if (frame.dataType != Frame.binaryData) {
             let reason = 'unknown dial error'
             try {
               reason = frame.getText()
@@ -315,7 +321,7 @@ export class FrameConn extends events.EventEmitter {
     return {}
   }
 
-  ping():Promise<undefined> {
+  ping():Promise<void> {
     return new Promise((resolve, reject) => {
       this.send(Frame.newPing())
       this.onceTimeout('pong', FrameConn.pingTimeout, resolve, reject)
@@ -380,7 +386,7 @@ export class FrameConn extends events.EventEmitter {
 
           // 把具体的事件传播出去
           let eventName = this.readingFrame.getEventName()
-          console.log('on frame', eventName, this.readingFrame)
+          // console.log('on frame', eventName, this.readingFrame)
           this.emit(eventName, this.readingFrame)
           this.initReadState(this.savedBuf.slice(this.wantSize))
           continue

@@ -45,7 +45,7 @@ export class CipherConn extends events.EventEmitter {
     })
   }
 
-  write(buf:Buffer):Boolean {
+  write(buf:Buffer):boolean {
     buf = this.encoder.update(buf)
     return this.conn.write(buf)
   }

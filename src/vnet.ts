@@ -5,6 +5,7 @@ import {Stream} from './stream'
 type requestHandler = (payload:any, header:any) => Promise<any>
 
 export class VNet extends events.EventEmitter {
+  static heartbeatInterval:number = 1000 * 4
   private fconn:FrameConn
   private handlerMap:Map<string,requestHandler>
 
@@ -96,7 +97,38 @@ export class VNet extends events.EventEmitter {
     return [resp['tid'], resp['vhost']]
   }
 
-  startHeartbeat() {
-    
+  async startHeartbeat() {
+    try {
+      do {
+        await sleep(VNet.heartbeatInterval)
+        await this.fconn.request('cluster/Heartbeat', {})
+      } while(true)
+    } catch (ex) {
+      console.log('heartbeat stopped', ex)
+    }
   }
+
+  async clusterDial(vhost:string, vport:number):Promise<Stream> {
+    let stream = new Stream(this.fconn)
+
+    try {
+      let {readSID} = await this.fconn.request('cluster/Dial', {
+        writeSID: stream.getReadSID(),
+        vhost,
+        vport
+      })
+      stream.bindWriteSID(readSID)
+    } catch (ex) {
+      stream.destroy()
+      throw ex
+    }
+
+    return stream
+  }
+}
+
+function sleep(tick:number):Promise<void> {
+  return new Promise(resolve => {
+    setTimeout(resolve, tick)
+  })
 }
