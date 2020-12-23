@@ -9,8 +9,13 @@ async function main() {
   let addr = 'localhost:2035'
   let secret = ''
   let vhost = 'nodets_test'
-
-  let vnet = await VNet.connect(addr, secret)
+  let vnet:VNet
+  try {
+    vnet = await VNet.connect(addr, secret)
+  } catch (ex) {
+    console.log(`connect ${addr} failed: ${ex}`)
+    return
+  }
   let cluster = new Cluster(vnet)
 
   try {
