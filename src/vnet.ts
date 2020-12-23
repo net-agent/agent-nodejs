@@ -1,12 +1,14 @@
 import * as events from 'events'
-import {Frame, FrameConn} from './frame_conn'
-import {Stream} from './stream'
+import * as net from 'net'
+import { CipherConn } from './cipher_conn'
+import { Frame, FrameConn } from './frame_conn'
+import { Stream } from './stream'
+import { splitHostPort } from './utils'
 
 type requestHandler = (payload:any, header:any) => Promise<any>
 
 export class VNet extends events.EventEmitter {
-  static heartbeatInterval:number = 1000 * 4
-  private fconn:FrameConn
+  public fconn:FrameConn
   private handlerMap:Map<string,requestHandler>
 
   constructor(fconn:FrameConn) {
@@ -67,6 +69,23 @@ export class VNet extends events.EventEmitter {
     })
   }
 
+  static connect(addr:string, secret:string):Promise<VNet> {
+    let {host, port} = splitHostPort(addr)
+    return new Promise((resolve, reject) => {
+      let conn = net.connect({host, port}, function () {
+        conn.removeAllListeners()
+        let cipherconn = new CipherConn(conn, secret)
+        cipherconn.on('ready', () => {
+          cipherconn.removeAllListeners()
+          let vnet = new VNet(new FrameConn(cipherconn))
+          resolve(vnet)
+        })
+        cipherconn.once('error', reject)
+      })
+      conn.once('error', reject)
+    })
+  }
+
   listen(vport:number, cb:(s:Stream) => void) {
     this.on(`stream/${vport}`, cb)
   }
@@ -85,50 +104,10 @@ export class VNet extends events.EventEmitter {
     })
   }
 
+  request(cmd:string, payload:any):Promise<any> {
+    return this.fconn.request(cmd, payload)
+  }
   onrequest(cmd:string, cb:requestHandler) {
     this.handlerMap.set(cmd, cb)
   }
-
-  //
-  // rpc client: cluster
-  //
-  async login(vhost:string):Promise<[number, string]> {
-    let resp = await this.fconn.request('cluster/Login', {vhost})
-    return [resp['tid'], resp['vhost']]
-  }
-
-  async startHeartbeat() {
-    try {
-      do {
-        await sleep(VNet.heartbeatInterval)
-        await this.fconn.request('cluster/Heartbeat', {})
-      } while(true)
-    } catch (ex) {
-      console.log('heartbeat stopped', ex)
-    }
-  }
-
-  async clusterDial(vhost:string, vport:number):Promise<Stream> {
-    let stream = new Stream(this.fconn)
-
-    try {
-      let {readSID} = await this.fconn.request('cluster/Dial', {
-        writeSID: stream.getReadSID(),
-        vhost,
-        vport
-      })
-      stream.bindWriteSID(readSID)
-    } catch (ex) {
-      stream.destroy()
-      throw ex
-    }
-
-    return stream
-  }
-}
-
-function sleep(tick:number):Promise<void> {
-  return new Promise(resolve => {
-    setTimeout(resolve, tick)
-  })
 }

@@ -37,26 +37,24 @@ export class CipherConn extends events.EventEmitter {
         return
       }
 
-      this.emit('ready')
       this.conn.on('data', buf => {
         buf = this.decoder.update(buf)
         this.emit('data', buf)
       })
+      let events = 'close|drain|end|error|timeout'.split('|')
+      events.forEach(event => {
+        this.conn.on(event, (...args:any) => {
+          this.emit(event, args)
+        })
+      })
+
+      this.emit('ready')
     })
   }
 
   write(buf:Buffer):boolean {
     buf = this.encoder.update(buf)
     return this.conn.write(buf)
-  }
-
-  on(event:string, listener: (...args: any[]) => void): this {
-    if ('close|connect|drain|end|error|lookup|timeout'.indexOf(event) >= 0) {
-      this.conn.on(event, listener)
-      return this
-    } else {
-      return super.on(event, listener)
-    }
   }
 
   // 生成随机的iv

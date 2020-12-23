@@ -237,6 +237,14 @@ export class FrameConn extends events.EventEmitter {
 
     this.initReadState(Buffer.alloc(0))
     this.conn.on('data', (buf) => this.eatBuf(buf))
+
+    // proxy event
+    let events = 'close|error'.split('|')
+    events.forEach(event => {
+      this.conn.on(event, (...args:any) => {
+        this.emit(event, args)
+      })
+    })
   }
 
   static uid():number {
