@@ -24,8 +24,8 @@ export function linkStream(s1:StreamLike, s2:StreamLike, target?:string) {
   })
 
   // end event
-  s1.on('end', s2.end)
-  s2.on('end', s1.end)
+  // s1.on('end', s2.end)
+  // s2.on('end', s1.end)
 
 
   // error

@@ -1,6 +1,7 @@
 import * as events from 'events'
 import * as cc from './cipher_conn'
 
+const debuglog = true
 const minFrameBufSize:number = 4 + 1 + 4 + 1 + 4 + 4
 
 export class Frame {
@@ -252,7 +253,7 @@ export class FrameConn extends events.EventEmitter {
   }
 
   send(frame:Frame):boolean {
-    // console.log('send frame', frame)
+    debuglog && console.log('>>> send frame', frame)
     return this.conn.write(frame.getBuffer())
   }
 
@@ -394,7 +395,7 @@ export class FrameConn extends events.EventEmitter {
 
           // 把具体的事件传播出去
           let eventName = this.readingFrame.getEventName()
-          // console.log('on frame', eventName, this.readingFrame)
+          debuglog && console.log('<<< recv frame', eventName, this.readingFrame)
           this.emit(eventName, this.readingFrame)
           this.initReadState(this.savedBuf.slice(this.wantSize))
           continue
