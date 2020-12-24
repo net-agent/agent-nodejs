@@ -6,6 +6,7 @@ export interface StreamLike {
   write(buf:Buffer):boolean
   destroy(error?:Error):void
   end(...args:any):void
+  removeListener(...args:any):void
 }
 
 export class Stream extends events.EventEmitter {

@@ -2,6 +2,8 @@ import * as events from 'events'
 import { StreamLike } from './stream';
 import * as net from 'net'
 import { linkStream } from './utils';
+import { VNet } from './vnet';
+import { Cluster } from './cluster';
 
 const rfc1928 = {
   version: 0x05,
@@ -35,12 +37,12 @@ export type AuthChecker = (username:string, password:string) => boolean
 export type Dialer = (username:string, password:string, host:string, port:number) => Promise<StreamLike>
 
 class ConnHandler extends events.EventEmitter {
-  private conn:net.Socket
+  private conn:StreamLike
   private pswdChecker:AuthChecker
   private dialer:Dialer
   private ondatacb:any
   private ondataerrcb:any
-  constructor(conn:net.Socket, pswdChecker:AuthChecker, dialer:Dialer) {
+  constructor(conn:StreamLike, pswdChecker:AuthChecker, dialer:Dialer) {
     super()
     this.selectMethod = rfc1928.methodPassword
     this.pswdChecker = pswdChecker
@@ -161,6 +163,8 @@ class ConnHandler extends events.EventEmitter {
   static  ST_CMD_header = 5
   static  ST_CMD_addr = 6
   static  ST_TRANSFER = 7
+  static  ST_DATA = 8
+  static  ST_DATA_PIPE = 99
   static  ST_ERR = 100
   private changeState(st:number, want:number, eat:boolean=true) {
     if (eat) {
@@ -175,7 +179,12 @@ class ConnHandler extends events.EventEmitter {
     return this.pswdChecker && this.pswdChecker(this.username, this.password)
   }
   private eatBuf(newBuf:Buffer) {
-    this.buf = Buffer.concat([this.buf, newBuf])
+    if (this.state == ConnHandler.ST_DATA_PIPE) return
+    if (!this.buf) {
+      this.buf = newBuf
+    } else {
+      this.buf = Buffer.concat([this.buf, newBuf])
+    }
 
     while (this.buf.length >= this.wantSize) {
       switch (this.state) {
@@ -202,7 +211,7 @@ class ConnHandler extends events.EventEmitter {
           for (let i = 0; i < this.methods.length; i++) {
             if (this.selectMethod == this.methods[i]) {
               this.emit('done-handshake', this.selectMethod)
-              this.changeState(ConnHandler.ST_CMD_header, 4)
+              this.changeState(ConnHandler.ST_CMD_header, 4+2) // 4代表header，2代表port
               found = true
               break
             }
@@ -249,8 +258,7 @@ class ConnHandler extends events.EventEmitter {
             this.changeState(ConnHandler.ST_CMD_addr, 16, false)
           } else if (this.reqAddrType == rfc1928.addrDomain) {
             this.reqAddrBufLen = this.buf.readUInt8(4)
-            this.changeState(ConnHandler.ST_CMD_addr,
-              this.reqAddrBufLen + 1, false) // 1代表len
+            this.changeState(ConnHandler.ST_CMD_addr, this.reqAddrBufLen + 1, false) // 1代表len
           } else {
             this.changeState(ConnHandler.ST_ERR, 0)
             this.eatErr = { event: 'error-cmd', err: `unknown address type ${this.reqAddrType}` }
@@ -264,14 +272,21 @@ class ConnHandler extends events.EventEmitter {
           this.reqAddrBuf = this.buf.slice(addrPos, portPos)
           this.reqPort = this.buf.readUInt16BE(portPos)
 
-          this.emit('request')
-          this.buf = null
-          this.wantSize = 0
-          this.conn.removeListener('data', this.ondatacb)
-          this.conn.removeListener('error', this.ondataerrcb)
-          return
+          this.changeState(ConnHandler.ST_DATA, 0)
+          continue
           // done
         
+        case ConnHandler.ST_DATA:
+          this.conn.removeListener('data', this.ondatacb)
+          this.conn.removeListener('error', this.ondataerrcb)
+          this.emit('request')
+          if (this.buf && this.buf.length > 0) {
+            this.emit('data', this.buf)
+            // console.log('tail data:', this.buf)
+          }
+          this.state = ConnHandler.ST_DATA_PIPE
+          return
+
         case ConnHandler.ST_ERR:
           this.emit(this.eatErr.event, this.eatErr.err)
           this.conn.removeListener('data', this.ondatacb)
@@ -283,16 +298,25 @@ class ConnHandler extends events.EventEmitter {
   }
 }
 
-export function createServer(auth:AuthChecker, dial:Dialer):net.Server {
-  return net.createServer((conn:net.Socket) => {
+function makeConnCb(auth:AuthChecker, dial:Dialer) {
+  return function (conn:StreamLike) {
     let handler = new ConnHandler(conn, auth, dial)
     handler.on('error', err => {
       conn.destroy()
       handler.removeAllListeners()
       handler = null
     })
-    handler.on('stream', (s:StreamLike) => {
-      linkStream(conn, s, handler.getAddr())
-    })
+    handler.once('stream', (target:StreamLike) => {
+      linkStream(conn, target, handler.getAddr())
   })
+}
+}
+
+
+export function createServer(auth:AuthChecker, dial:Dialer):net.Server {
+  return net.createServer(makeConnCb(auth, dial))
+}
+
+export function listenOnVNet(vnet:VNet, port:number, auth:AuthChecker, dial:Dialer) {
+  vnet.listen(port, makeConnCb(auth, dial))
 }

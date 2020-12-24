@@ -2,6 +2,8 @@ import { StreamLike } from './stream'
 import * as net from 'net'
 import { readFile } from 'fs'
 
+const debug = false
+
 export function sleep(tick:number):Promise<void> {
   return new Promise(resolve => {
     setTimeout(resolve, tick)
@@ -16,17 +18,22 @@ export function linkStream(s1:StreamLike, s2:StreamLike, target?:string) {
   // data event
   s1.on('data', buf => {
     s1tos2 += buf.length
+    debug && console.log('send', target, buf)
     s2.write(buf)
   })
   s2.on('data', buf => {
     s2tos1 += buf.length
+    debug && console.log('recv', target, buf)
     s1.write(buf)
   })
 
   // end event
-  s1.on('end', s2.end)
-  s2.on('end', s1.end)
-
+  s1.on('end', () => {
+    debug && console.log(`s1.end target[${target}]`)
+    try { s2.end() } catch (ex) {} })
+  s2.on('end', () => {
+    debug && console.log(`s2.end target[${target}]`)
+    try { s1.end() } catch (ex) {} })
 
   // error
   let errored = false
@@ -45,6 +52,8 @@ export function linkStream(s1:StreamLike, s2:StreamLike, target?:string) {
   let onclose = () => {
     if (closed) return
     closed = true
+    s1.destroy()
+    s2.destroy()
     let lifetime = Date.now() - startTime
     console.log(`conn closed, target[${target}] send[${byteUnit(s1tos2)}] recv[${byteUnit(s2tos1)}] lifetime[${timestr(lifetime)}]`)
   }
@@ -61,10 +70,15 @@ export function splitHostPort(addr:string):{host:string,port:number} {
 
 export function dial(host:string, port:number):Promise<net.Socket> {
   return new Promise((resolve, reject) => {
-    let conn = net.connect({host, port}, function () {
-      conn.removeAllListeners()
-      resolve(conn)
-    })
+    let conn:net.Socket
+    try {
+      conn = net.connect({host, port}, function () {
+        conn.removeAllListeners()
+        resolve(conn)
+      })
+    } catch (ex) {
+      return reject(ex)
+    }
     conn.once('error', reject)
   })
 }
