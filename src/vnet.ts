@@ -17,10 +17,10 @@ export class VNet extends events.EventEmitter {
     
     this.fconn.on('dial',  (frame:Frame) => {
       let data:Buffer = frame.getData()
-      if (!frame.isType(Frame.binaryData) || !data || data.length != 8) {
+      if (frame.dataType != Frame.binaryData || !data || data.length != 8) {
         this.fconn.send(new Frame(
           Frame.uid(), frame.sid, Frame.typeDialResponse, null,
-          Frame.textData, Buffer.from('decode dial request failed')
+          Frame.textData, Buffer.from('decode dial request failed [nodejs]')
         ))
         return
       }

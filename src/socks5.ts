@@ -1,15 +1,7 @@
 import * as events from 'events'
 import { StreamLike } from './stream';
 import * as net from 'net'
-import { Stream } from 'stream';
-
-function createServer(cb:any) {
-  return net.createServer(function (conn:net.Socket) {
-    conn.on('data', function (buf) {
-
-    })
-  })
-}
+import { linkStream } from './utils';
 
 const rfc1928 = {
   version: 0x05,
@@ -39,45 +31,106 @@ const rfc1929 = {
   failure: 0x01
 }
 
-type AuthChecker = (username:string, password:string) => boolean
-type Dialer = (username:string, password:string, addr:string) => Promise<StreamLike>
+export type AuthChecker = (username:string, password:string) => boolean
+export type Dialer = (username:string, password:string, host:string, port:number) => Promise<StreamLike>
 
-class Socks5Handler extends events.EventEmitter {
+class ConnHandler extends events.EventEmitter {
   private conn:net.Socket
+  private pswdChecker:AuthChecker
+  private dialer:Dialer
+  private ondatacb:any
+  private ondataerrcb:any
   constructor(conn:net.Socket, pswdChecker:AuthChecker, dialer:Dialer) {
     super()
-    this.conn = conn
-    this.conn.on('data', buf => this.eatBuf(buf))
-    let destroy = () => {
-      this.conn.destroy()
-      this.removeAllListeners()
-      this.conn.removeAllListeners()
+    this.selectMethod = rfc1928.methodPassword
+    this.pswdChecker = pswdChecker
+    if (!pswdChecker) {
+      this.selectMethod = rfc1928.methodNoAuth
     }
-    this.on('request', () => {
-      this.conn.removeAllListeners('data') // 到了request阶段后，不再eatBuf
+    this.dialer = dialer
+    this.conn = conn
+    
+    // init eatBuf state
+    this.buf = Buffer.alloc(0)
+    this.wantSize = 2
+    this.state = ConnHandler.ST_HANDSHAKE_header
+    this.ondatacb = (buf:Buffer) => this.eatBuf(buf)
+    this.ondataerrcb = (err:any) => this.emit('error', `handshake failed: ${err}`)
+    this.conn.on('data', this.ondatacb)
+    this.conn.on('error', this.ondataerrcb)
+
+    this.on('request', async () => {
+      if (!this.dialer) {
+        this.emit('error-cmd', 'dialer is null')
+        return
+      }
+
+      let host:string = this.getHost()
+      if (host == '') {
+        this.emit('error-dial', 'ipv6 addr not supported')
+        return
+      }
+      let s:StreamLike
+      try {
+        s = await this.dialer(this.username, this.password, host, this.reqPort)
+      } catch (ex) {
+        this.emit('error-dial', ex)
+      }
+      this.conn.write(Buffer.from([
+        rfc1928.version, rfc1928.repSuccess, 0x00,
+        rfc1928.addrV4, 0,0,0,0,
+        0,0]))
+      this.emit('stream', s)
     })
     this.on('error-handshake', err => {
       this.conn.write(Buffer.from([rfc1928.version, rfc1928.methodNoAccept]))
-      destroy()
+      this.emit('error', 'error-handshake')
+    })
+    this.on('done-handshake', method => {
+      this.conn.write(Buffer.from([rfc1928.version, method]))
     })
     this.on('error-auth', err => {
       this.conn.write(Buffer.from([rfc1929.version, rfc1929.failure]))
-      destroy()
+      this.emit('error', 'error-auth')
     })
     this.on('error-cmd', err => {
       this.conn.write(Buffer.from([
         rfc1928.version, rfc1928.repGeneralErr, 0x00,
         rfc1928.addrV4, 0,0,0,0,
         0,0]))
-      destroy()
+      this.emit('error', 'error-cmd')
     })
     this.on('error-dial', err => {
+      console.log(`error-dial: ${err}`)
       this.conn.write(Buffer.from([
         rfc1928.version, rfc1928.repConnectionRefused, 0x00,
         rfc1928.addrV4, 0,0,0,0,
         0,0]))
-      destroy()
+      this.emit('error', 'error-dial')
     })
+  }
+
+  getHost():string {
+    switch (this.reqAddrType) {
+    case rfc1928.addrV4:
+      return [
+        this.reqAddrBuf.readUInt8(0),
+        this.reqAddrBuf.readUInt8(1),
+        this.reqAddrBuf.readUInt8(2),
+        this.reqAddrBuf.readUInt8(3),
+      ].join('.')
+    case rfc1928.addrV6:
+      // todo
+      return ''
+    case rfc1928.addrDomain:
+      return this.reqAddrBuf.toString('utf-8')
+    }
+  }
+  getPort():number {
+    return this.reqPort
+  }
+  getAddr():string {
+    return `${this.getHost()}:${this.reqPort}`
   }
 
   public version:number
@@ -119,7 +172,7 @@ class Socks5Handler extends events.EventEmitter {
     this.state = st
   }
   private checkPassword():boolean {
-    return false
+    return this.pswdChecker && this.pswdChecker(this.username, this.password)
   }
   private eatBuf(newBuf:Buffer) {
     this.buf = Buffer.concat([this.buf, newBuf])
@@ -127,79 +180,84 @@ class Socks5Handler extends events.EventEmitter {
     while (this.buf.length >= this.wantSize) {
       switch (this.state) {
         
-        case Socks5Handler.ST_HANDSHAKE_header:
+        case ConnHandler.ST_HANDSHAKE_header:
           this.version = this.buf.readUInt8(0)
           if (this.version != rfc1928.version) {
-            this.changeState(Socks5Handler.ST_ERR, 0)
+            this.changeState(ConnHandler.ST_ERR, 0)
             this.eatErr = { event: 'error-handshake', err:'protocol version invalid' }
             continue
           }
           this.methodsLen = this.buf.readUInt8(1) // todo：判断长度是否为空
           if (this.methodsLen <= 0) {
-            this.changeState(Socks5Handler.ST_ERR, 0)
+            this.changeState(ConnHandler.ST_ERR, 0)
             this.eatErr = { event: 'error-handshake', err:'length of methods invalid' }
             continue
           }
-          this.changeState(Socks5Handler.ST_HANDSHAKE_methods, this.methodsLen)
+          this.changeState(ConnHandler.ST_HANDSHAKE_methods, this.methodsLen)
           continue
        
-        case Socks5Handler.ST_HANDSHAKE_methods:
-          this.methods = this.buf.slice(2, 2 + this.methodsLen)
+        case ConnHandler.ST_HANDSHAKE_methods:
+          this.methods = this.buf.slice(0, this.methodsLen)
+          let found = false
           for (let i = 0; i < this.methods.length; i++) {
             if (this.selectMethod == this.methods[i]) {
-              this.changeState(Socks5Handler.ST_CMD_header, 4)
-              continue
+              this.emit('done-handshake', this.selectMethod)
+              this.changeState(ConnHandler.ST_CMD_header, 4)
+              found = true
+              break
             }
           }
-          this.changeState(Socks5Handler.ST_ERR, 0)
-          this.eatErr = { event: 'error-handshake', err: 'method not found' }
+          if (!found) {
+            this.changeState(ConnHandler.ST_ERR, 0)
+            this.eatErr = { event: 'error-handshake', err: 'method not found' }
+          }
           continue
         
-        case Socks5Handler.ST_AUTHPSWD_header:
+        case ConnHandler.ST_AUTHPSWD_header:
           this.pswdVersion = this.buf.readUInt8(0)
           this.usernameLen = this.buf.readUInt8(1)
-          this.changeState(Socks5Handler.ST_AUTHPSWD_username,
+          this.changeState(ConnHandler.ST_AUTHPSWD_username,
             this.usernameLen + 1)
           continue
         
-        case Socks5Handler.ST_AUTHPSWD_username:
+        case ConnHandler.ST_AUTHPSWD_username:
           this.username = this.buf.slice(2, 2 + this.usernameLen).toString('utf-8')
           this.passwordLen = this.buf.readUInt8(this.wantSize - 1)
-          this.changeState(Socks5Handler.ST_AUTHPSWD_password,
+          this.changeState(ConnHandler.ST_AUTHPSWD_password,
             this.passwordLen)
           continue
         
-        case Socks5Handler.ST_AUTHPSWD_password:
+        case ConnHandler.ST_AUTHPSWD_password:
           this.password = this.buf.toString('utf-8')
           if (this.checkPassword()) {
-            this.changeState(Socks5Handler.ST_CMD_header, 4+2) // 4代表header，2代表port
+            this.changeState(ConnHandler.ST_CMD_header, 4+2) // 4代表header，2代表port
           } else {
-            this.changeState(Socks5Handler.ST_ERR, 0)
+            this.changeState(ConnHandler.ST_ERR, 0)
             this.eatErr = { event: 'error-auth', err: 'check password failed' }
           }
           continue
         
-        case Socks5Handler.ST_CMD_header:
+        case ConnHandler.ST_CMD_header:
           this.reqVersion = this.buf.readUInt8(0)
           this.reqCommand = this.buf.readUInt8(1)
           this.reqAddrType = this.buf.readUInt8(3)
           if (this.reqAddrType == rfc1928.addrV4) {
             this.reqAddrBufLen = 4
-            this.changeState(Socks5Handler.ST_CMD_addr, 4, false) // 不吃掉buf，因为还有2个byte没读
+            this.changeState(ConnHandler.ST_CMD_addr, 4, false) // 不吃掉buf，因为还有2个byte没读
           } else if (this.reqAddrType == rfc1928.addrV6) {
             this.reqAddrBufLen = 16
-            this.changeState(Socks5Handler.ST_CMD_addr, 16, false)
+            this.changeState(ConnHandler.ST_CMD_addr, 16, false)
           } else if (this.reqAddrType == rfc1928.addrDomain) {
             this.reqAddrBufLen = this.buf.readUInt8(4)
-            this.changeState(Socks5Handler.ST_CMD_addr,
+            this.changeState(ConnHandler.ST_CMD_addr,
               this.reqAddrBufLen + 1, false) // 1代表len
           } else {
-            this.changeState(Socks5Handler.ST_ERR, 0)
+            this.changeState(ConnHandler.ST_ERR, 0)
             this.eatErr = { event: 'error-cmd', err: `unknown address type ${this.reqAddrType}` }
           }
           continue
 
-        case Socks5Handler.ST_CMD_addr:
+        case ConnHandler.ST_CMD_addr:
           let addrPos = this.reqAddrType == rfc1928.addrDomain ? 5 : 4
           let portPos = addrPos + this.reqAddrBufLen
             
@@ -209,14 +267,32 @@ class Socks5Handler extends events.EventEmitter {
           this.emit('request')
           this.buf = null
           this.wantSize = 0
+          this.conn.removeListener('data', this.ondatacb)
+          this.conn.removeListener('error', this.ondataerrcb)
           return
           // done
         
-        case Socks5Handler.ST_ERR:
+        case ConnHandler.ST_ERR:
           this.emit(this.eatErr.event, this.eatErr.err)
+          this.conn.removeListener('data', this.ondatacb)
+          this.conn.removeListener('error', this.ondataerrcb)
           return
           // done
       }
     }
   }
+}
+
+export function createServer(auth:AuthChecker, dial:Dialer):net.Server {
+  return net.createServer((conn:net.Socket) => {
+    let handler = new ConnHandler(conn, auth, dial)
+    handler.on('error', err => {
+      conn.destroy()
+      handler.removeAllListeners()
+      handler = null
+    })
+    handler.on('stream', (s:StreamLike) => {
+      linkStream(conn, s, handler.getAddr())
+    })
+  })
 }
