@@ -16,18 +16,33 @@ export type ServiceInfo = {
 }
 
 export function runService(vnet:VNet, cluster:Cluster, info:ServiceInfo): EventEmitter {
+  let svc:EventEmitter
+
   switch (info.type) {
   case 'socks5':
-    return runSocks5(vnet, cluster,
+    svc = runSocks5(vnet, cluster,
       info.param.listen,
       info.param.username,
       info.param.password)
+    break
   case 'portproxy':
-    return runPortproxy(vnet, cluster,
+    svc = runPortproxy(vnet, cluster,
       info.param.listen,
       info.param.target)
+    break
   default:
     throw `unknown service type: ${info.type}`
+  }
+
+  return svc
+}
+
+function safeDial(cluster:Cluster, addr:string):Promise<StreamLike> {
+  let {host, port} = splitHostPort(addr)
+  if (/\.tunnel$/.test(host)) {
+    return cluster.dial(host, port)
+  } else {
+    return dial(host, port)
   }
 }
 
@@ -36,14 +51,8 @@ export function runPortproxy(vnet:VNet, cluster:Cluster, listen:string, target:s
   let {host, port} = splitHostPort(listen)
   let onStreamLike = async (s1:StreamLike) => {
     try {
-      let s2:StreamLike
-      let {host, port} = splitHostPort(target)
-      if (/\.tunnel$/.test(host)) {
-        s2 = await cluster.dial(host, port)
-      } else {
-        s2 = await dial(host, port)
-      }
-      linkStream(s1, s2)
+      let s2 = await safeDial(cluster, target)
+      linkStream(s1, s2, target)
     } catch (ex) {
       s1.destroy()
       let err = `connect target='${target}' failed, ${ex}`
@@ -77,14 +86,29 @@ export function runSocks5(vnet:VNet, cluster:Cluster, listen:string, username:st
   }
   
   let dialer:socks5.Dialer = (username:string, password:string, host:string, port:number):Promise<StreamLike> => {
-    return dial(host, port)
+    return safeDial(cluster, `${host}:${port}`)
   }
 
-  socks5
-    .createServer(checker, dialer)
-    .listen(1083, 'localhost', () => {
-      ev.emit('ready', 'socks5://localhost:1083')
-    })
+  let {host, port} = splitHostPort(listen)
+  let onready = () => {
+    let query = ''
+    if (username != '' || password != '') {
+      query = `?u=${username}&p=${password}`
+    }
+    ev.emit('ready', `socks5://${listen}${query}`)
+  }
+
+  setImmediate(() => {
+    if (host == 'tunnel') {
+      socks5.listenOnVNet(vnet, port, checker, dialer)
+      onready()
+    } else {
+      socks5
+        .createServer(checker, dialer)
+        .listen(port, host, onready)
+    }
+  })
+
 
   return ev
 }

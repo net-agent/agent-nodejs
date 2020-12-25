@@ -22,6 +22,7 @@ async function main() {
   let vnet:VNet
   try {
     vnet = await VNet.connect(addr, secret)
+    console.log(`vnet connect success, addr=${addr}`)
   } catch (ex) {
     console.log(`connect ${addr} failed: ${ex}`)
     return
@@ -31,7 +32,7 @@ async function main() {
   try {
     let resp = await cluster.login(vhost)
     vhost = resp.vhost
-    console.log('login success', resp)
+    console.log(`login cluster success, vhost=${resp.vhost} tid=${resp.tid}`)
     cluster.startHeartbeat()
   } catch (ex) {
     console.log('login failed', ex)
@@ -42,16 +43,20 @@ async function main() {
     return
   }
   services.forEach((svcInfo, index) => {
+    let prefix = `[${index}][${svcInfo.type.padEnd(9, ' ')}] "${svcInfo.description}"`
     if (!svcInfo.enable) {
-      console.warn(`[${index}] ${svcInfo.type} disabled`)
+      console.warn(`${prefix} disabled`)
       return
     }
     let svc = runService(vnet, cluster, svcInfo)
-    svc.on('ready', (info) => {
-      console.warn(`[${index}] ${svcInfo.type} ready. ${info}`)
+    svc.on('ready', info => {
+      console.log(`${prefix} ready. ${info}`)
     })
     svc.on('error', err => {
-      console.log(`[${index}] ${svcInfo.type} has error: `, err)
+      console.log(`${prefix} has error: `, err)
+    })
+    svc.on('warn', info => {
+      console.log((`${prefix} warn: ${info}`))
     })
   })
 }
