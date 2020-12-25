@@ -1,7 +1,7 @@
 import * as events from 'events'
 import * as cc from './cipher_conn'
 
-const debuglog = true
+const debuglog = false
 const minFrameBufSize:number = 4 + 1 + 4 + 1 + 4 + 4
 
 export class Frame {

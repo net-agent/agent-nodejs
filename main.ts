@@ -2,11 +2,24 @@ import { VNet } from './src/vnet'
 import { Cluster } from './src/cluster'
 import { runService } from './src/services'
 import * as utils from './src/utils'
-import { Config } from './src/config'
+import { Config, TunnelInfo } from './src/config'
 
-main()
+export async function openVNet(tunnel:TunnelInfo):Promise<{vnet:VNet, cluster:Cluster}> {
+  let addr = tunnel.address
+  let secret = tunnel.password
+  let vhost = tunnel.vhost
+  let vnet:VNet = await VNet.connect(addr, secret)
+  console.log(`vnet connect success, addr=${addr}`)
+  let cluster = new Cluster(vnet)
+  let resp = await cluster.login(vhost)
+  vhost = resp.vhost
+  console.log(`login cluster success, vhost=${resp.vhost} tid=${resp.tid}`)
+  cluster.startHeartbeat()
 
-async function main() {
+  return {vnet, cluster}
+}
+
+export async function main() {
   let config:Config
   try {
     config = await utils.loadJSONFile('./dist/config.json')
@@ -16,26 +29,14 @@ async function main() {
   }
   let {tunnel, services} = config
 
-  let addr = tunnel.address
-  let secret = tunnel.password
-  let vhost = tunnel.vhost
-  let vnet:VNet
+  let vnet:VNet, cluster:Cluster
   try {
-    vnet = await VNet.connect(addr, secret)
-    console.log(`vnet connect success, addr=${addr}`)
+    let resp = await openVNet(tunnel)
+    vnet = resp.vnet
+    cluster = resp.cluster
   } catch (ex) {
-    console.log(`connect ${addr} failed: ${ex}`)
+    console.warn('openVNet failed', ex)
     return
-  }
-  let cluster = new Cluster(vnet)
-
-  try {
-    let resp = await cluster.login(vhost)
-    vhost = resp.vhost
-    console.log(`login cluster success, vhost=${resp.vhost} tid=${resp.tid}`)
-    cluster.startHeartbeat()
-  } catch (ex) {
-    console.log('login failed', ex)
   }
 
   if (!services || services.length <= 0) {

@@ -14,11 +14,44 @@ export class Stream extends events.EventEmitter {
   private writeSID:number
   private readSID:number
   private writable:boolean = false
+  private dataCache:Buffer = Buffer.alloc(0)
+  private dataListenerFound:boolean = false
 
   constructor(fconn:FrameConn) {
     super()
     this.fconn = fconn
     this.readSID = Frame.uid()
+    
+    this.fconn.on(`data/${this.readSID}`, (frame:Frame) => {
+      if (!frame.data || frame.data.length == 0) {
+        this.emit('end')  // todo: end事件因该也要像data一样进行缓存
+      } else {
+        if (!this.dataListenerFound) {
+          this.dataCache = Buffer.concat([this.dataCache, frame.data])
+          this.dataListenerFound = this.emit('data', this.dataCache)
+          if (this.dataListenerFound) {
+            this.dataCache = null
+          }
+        } else {
+          this.emit('data', frame.data)
+        }
+      }
+    })
+  }
+
+  on(event:'data'|'end'|'close'|'error', cb:(...args:any) => void):this {
+    if (event == 'data' && !this.dataListenerFound) {
+      setTimeout(() => {
+        if (!this.dataListenerFound && this.dataCache && this.dataCache.length > 0) {
+          this.dataListenerFound = this.emit('data', this.dataCache)
+          if (this.dataListenerFound) {
+            this.dataCache = null
+          }
+        }
+      }, 10)
+    }
+    super.on(event, cb)
+    return this
   }
 
   bindWriteSID(sid:number) {
@@ -50,23 +83,6 @@ export class Stream extends events.EventEmitter {
     this.fconn = null
     this.readSID = 0
     this.emit('close')
-  }
-
-  on(event:'data'|'end'|'close'|'error', cb:(...args:any) => void):this {
-    switch (event) {
-      case 'data':
-        this.fconn.on(`data/${this.readSID}`, (frame:Frame) => {
-          if (!frame.data || frame.data.length == 0) {
-            this.emit('end')
-          } else {
-            cb(frame.data)
-          }
-        })
-        break
-      default:
-        super.on(event, cb)
-    }
-    return this
   }
 
   end(data?:Buffer, cb?:() =>void ):this {
